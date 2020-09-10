@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+
+	"github.com/open-policy-agent/opa/metrics"
 )
 
 // OPA executes WebAssembly compiled Rego policies.
@@ -135,19 +137,25 @@ func (o *OPA) setPolicyData(policy []byte, data []byte) error {
 // evaluation results. If no policy was configured at construction
 // time nor set after, the function returns ErrNotReady.  It returns
 // ErrInternal if any other error occurs.
-func (o *OPA) Eval(ctx context.Context, input *interface{}) (*Result, error) {
+func (o *OPA) Eval(ctx context.Context, input *interface{}, m metrics.Metrics) (*Result, error) {
+	m.Timer("golang_opa_wasm_eval_total").Start()
+	defer m.Timer("golang_opa_wasm_eval_total").Stop()
 	if o.pool == nil {
 		return nil, ErrNotReady
 	}
 
+	m.Timer("golang_opa_wasm_pool_acquire").Start()
 	instance, err := o.pool.Acquire(ctx)
+	m.Timer("golang_opa_wasm_pool_acquire").Stop()
 	if err != nil {
 		return nil, err
 	}
 
 	defer o.pool.Release(instance)
 
-	result, err := instance.Eval(ctx, input)
+	m.Timer("golang_opa_wasm_instance_eval").Start()
+	result, err := instance.Eval(ctx, input, m)
+	m.Timer("golang_opa_wasm_instance_eval").Stop()
 	if err != nil {
 		return nil, fmt.Errorf("%v: %w", err, ErrInternal)
 	}
@@ -174,7 +182,7 @@ func (o *OPA) Close() {
 // ErrUndefined indicating an undefined policy decision and
 // ErrNonBoolean indicating a non-boolean policy decision.
 func EvalBool(ctx context.Context, o *OPA, input *interface{}) (bool, error) {
-	rs, err := o.Eval(ctx, input)
+	rs, err := o.Eval(ctx, input, metrics.New())
 	if err != nil {
 		return false, err
 	}

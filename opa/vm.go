@@ -12,6 +12,7 @@ import (
 	"fmt"
 
 	"github.com/open-policy-agent/opa/ast"
+	"github.com/open-policy-agent/opa/metrics"
 	"github.com/open-policy-agent/opa/topdown"
 	"github.com/open-policy-agent/opa/topdown/builtins"
 	wasm "github.com/wasmerio/go-ext-wasm/wasmer"
@@ -144,8 +145,11 @@ func newVM(policy []byte, data []byte, memoryMin, memoryMax uint32) (*vm, error)
 	return v, nil
 }
 
-func (i *vm) Eval(ctx context.Context, input *interface{}) (interface{}, error) {
-	if err := i.setHeapState(i.evalHeapPtr); err != nil {
+func (i *vm) Eval(ctx context.Context, input *interface{}, m metrics.Metrics) (interface{}, error) {
+	m.Timer("golang_opa_wasm_instance_eval_setHeapState").Start()
+	err := i.setHeapState(i.evalHeapPtr)
+	m.Timer("golang_opa_wasm_instance_eval_setHeapState").Stop()
+	if err != nil {
 		return nil, err
 	}
 
@@ -155,7 +159,7 @@ func (i *vm) Eval(ctx context.Context, input *interface{}) (interface{}, error) 
 	}()
 
 	// Parse the input JSON and activate it with the data.
-
+	m.Timer("golang_opa_wasm_instance_eval_setup_mem").Start()
 	addr, err := i.evalCtxNew()
 	if err != nil {
 		return nil, err
@@ -168,8 +172,10 @@ func (i *vm) Eval(ctx context.Context, input *interface{}) (interface{}, error) 
 			return nil, err
 		}
 	}
+	m.Timer("golang_opa_wasm_instance_eval_setup_mem").Stop()
 
 	if input != nil {
+		m.Timer("golang_opa_wasm_instance_eval_setup_input").Start()
 		inputAddr, err := i.toRegoJSON(*input, false)
 		if err != nil {
 			return nil, err
@@ -178,11 +184,14 @@ func (i *vm) Eval(ctx context.Context, input *interface{}) (interface{}, error) 
 		if _, err := i.evalCtxSetInput(ctxAddr, inputAddr); err != nil {
 			return nil, err
 		}
+		m.Timer("golang_opa_wasm_instance_eval_setup_input").Stop()
 	}
 
 	// Evaluate the policy.
-
-	if _, err := i.eval(ctxAddr); err != nil {
+	m.Timer("golang_opa_wasm_instance_eval_wasm_eval").Start()
+	_, err = i.eval(ctxAddr)
+	m.Timer("golang_opa_wasm_instance_eval_wasm_eval").Stop()
+	if err != nil {
 		return nil, err
 	}
 
@@ -190,12 +199,16 @@ func (i *vm) Eval(ctx context.Context, input *interface{}) (interface{}, error) 
 		return nil, errors.New(i.internalError)
 	}
 
+	m.Timer("golang_opa_wasm_instance_eval_get_result").Start()
 	resultAddr, err := i.evalCtxGetResult(ctxAddr)
+	m.Timer("golang_opa_wasm_instance_eval_get_result").Stop()
 	if err != nil {
 		return nil, err
 	}
 
+	m.Timer("golang_opa_wasm_instance_eval_transform_result").Start()
 	result, err := i.fromRegoJSON(resultAddr.ToI32(), false)
+	m.Timer("golang_opa_wasm_instance_eval_transform_result").Stop()
 
 	// Skip free'ing input and result JSON as the heap will be reset next round anyway.
 
